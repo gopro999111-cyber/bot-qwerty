@@ -13,7 +13,9 @@ const DISCORD_WEBHOOK =
   "https://discord.com/api/webhooks/1462854392570183702/fNoEyNK3qJ8XqEovBjL76rTn3WZoIU_Rpv5b5j5aVRLXACg3wB1PqMLjyg4P7E5R7MVd";
 
 const DISCORD_USER_IDS = [
-  "1466921240718606418"
+  "865670632847048708",
+  "1257048208891449346",
+  "1204869793791086665"
 ];
 
 // ====== ЗАГРУЗКА ID ======
@@ -126,3 +128,4 @@ async function sendDiscord(c) {
     await new Promise(r => setTimeout(r, CHECK_INTERVAL));
   }
 })();
+
