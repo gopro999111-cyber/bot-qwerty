@@ -6,7 +6,6 @@ import fetch from "node-fetch";
 const URL = "https://grnd.gg/admin/complaints";
 const CHECK_INTERVAL = 30_000; // 30 секунд
 const STORAGE_FILE = "notified_ids.json";
-const DEBUG_HTML = "debug.html";
 
 // ====== DISCORD ======
 const DISCORD_WEBHOOK =
@@ -53,13 +52,32 @@ async function sendDiscord(c) {
   });
 }
 
-// ====== MAIN ======
-(async () => {
-  const browser = await chromium.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"]
+// ====== ИЗВЛЕЧЕНИЕ ЖАЛОБ ======
+async function getComplaints(page) {
+  await page.waitForSelector(".table-component-index table");
+
+  const complaints = await page.evaluate(() => {
+    return [...document.querySelectorAll(
+      ".table-component-index table tbody tr"
+    )].map(row => {
+      const tds = row.querySelectorAll("td");
+      if (tds.length < 4) return null;
+
+      return {
+        id: tds[0].innerText.trim(),
+        from: tds[1].innerText.trim(),
+        on: tds[2].innerText.trim(),
+        date: tds[3].innerText.trim()
+      };
+    }).filter(Boolean);
   });
 
+  return complaints;
+}
+
+// ====== MAIN ======
+(async () => {
+  const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
     storageState: "auth.json"
   });
@@ -68,43 +86,15 @@ async function sendDiscord(c) {
 
   console.log("🤖 Бот запущен, мониторинг начат");
 
-  const firstRun = notified.size === 0;
-  if (firstRun) console.log("🚀 Первый запуск — отправляю все существующие жалобы");
-
   while (true) {
     try {
       await page.goto(URL, { waitUntil: "networkidle" });
 
-      // ждём таблицу с жалобами (до 15 секунд)
-      await page.waitForSelector(".table-component-index table tbody tr", { timeout: 15_000 }).catch(() => {});
-
-      // сохраняем HTML для отладки
-      fs.writeFileSync(DEBUG_HTML, await page.content());
-
-      const complaints = await page.evaluate(() => {
-        return [...document.querySelectorAll(
-          ".table-component-index table tbody tr"
-        )]
-          .map(row => {
-            const tds = row.querySelectorAll("td");
-            if (tds.length < 4) return null;
-
-            return {
-              id: tds[0].innerText.trim(),
-              from: tds[1].innerText.trim(),
-              on: tds[2].innerText.trim(),
-              date: tds[3].innerText.trim()
-            };
-          })
-          .filter(Boolean);
-      });
-
-      console.log(`Найдено жалоб: ${complaints.length}`);
+      const complaints = await getComplaints(page);
 
       let sent = 0;
-
       for (const c of complaints) {
-        if (notified.has(c.id) && !firstRun) continue; // если не первый запуск — только новые
+        if (notified.has(c.id)) continue;
 
         await sendDiscord(c);
         notified.add(c.id);
@@ -113,19 +103,15 @@ async function sendDiscord(c) {
 
       if (sent > 0) {
         saveNotified();
-        console.log(`✅ Отправлено жалоб: ${sent}`);
+        console.log(`✅ Отправлено новых жалоб: ${sent}`);
       } else {
         console.log("⏳ Новых жалоб нет");
       }
-
     } catch (err) {
       console.error("❌ Ошибка:", err.message);
     }
 
-    // после первого цикла больше не первый запуск
-    firstRun && (firstRun = false);
-
+    // ждем перед следующим обновлением страницы
     await new Promise(r => setTimeout(r, CHECK_INTERVAL));
   }
 })();
-
