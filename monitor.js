@@ -2,128 +2,126 @@ import { chromium } from "playwright";
 import fs from "fs";
 import fetch from "node-fetch";
 
-const WEBHOOK_URL =
+// ====== НАСТРОЙКИ ======
+const URL = "https://grnd.gg/admin/complaints";
+const CHECK_INTERVAL = 30_000; // 30 секунд
+const STORAGE_FILE = "notified_ids.json";
+const DEBUG_HTML = "debug.html";
+
+// ====== DISCORD ======
+const DISCORD_WEBHOOK =
   "https://discord.com/api/webhooks/1462854392570183702/fNoEyNK3qJ8XqEovBjL76rTn3WZoIU_Rpv5b5j5aVRLXACg3wB1PqMLjyg4P7E5R7MVd";
 
-const CHECK_INTERVAL = 30_000; // 30 сек
-const NOTIFIED_FILE = "./notified_ids.json";
+const DISCORD_USER_IDS = [
+  "1466921240718606418"
+];
 
-// создаём файл с уведомлёнными ID, если его нет
-if (!fs.existsSync(NOTIFIED_FILE)) {
-  fs.writeFileSync(NOTIFIED_FILE, JSON.stringify([]));
+// ====== ЗАГРУЗКА ID ======
+const notified = fs.existsSync(STORAGE_FILE)
+  ? new Set(JSON.parse(fs.readFileSync(STORAGE_FILE, "utf8")))
+  : new Set();
+
+function saveNotified() {
+  fs.writeFileSync(STORAGE_FILE, JSON.stringify([...notified], null, 2));
 }
 
-const notifiedIds = new Set(
-  JSON.parse(fs.readFileSync(NOTIFIED_FILE, "utf8"))
-);
+// ====== DISCORD SEND ======
+async function sendDiscord(c) {
+  await fetch(DISCORD_WEBHOOK, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      content: DISCORD_USER_IDS.map(id => `<@${id}>`).join(" "),
+      allowed_mentions: { users: DISCORD_USER_IDS },
+      embeds: [
+        {
+          title: "🚨 Новая жалоба",
+          color: 15158332,
+          fields: [
+            { name: "ID", value: `#${c.id}`, inline: true },
+            { name: "От", value: c.from || "—", inline: true },
+            { name: "На", value: c.on || "—", inline: true },
+            { name: "Дата", value: c.date || "—" }
+          ],
+          footer: { text: "grnd.gg • admin panel" },
+          timestamp: new Date().toISOString()
+        }
+      ]
+    })
+  });
+}
 
-// флаг: первый запуск — шлём все существующие жалобы
-const SEND_EXISTING_ON_START = notifiedIds.size === 0;
-
+// ====== MAIN ======
 (async () => {
   const browser = await chromium.launch({
     headless: true,
     args: ["--no-sandbox", "--disable-setuid-sandbox"]
   });
 
-  const context = await browser.newContext();
+  const context = await browser.newContext({
+    storageState: "auth.json"
+  });
+
   const page = await context.newPage();
 
-  // --- Логинимся через auth.json или переменные окружения ---
-  const AUTH_FILE = "./auth.json";
-  if (fs.existsSync(AUTH_FILE)) {
-    console.log("🔐 Использую сохранённую сессию");
-    const cookies = JSON.parse(fs.readFileSync(AUTH_FILE));
-    await context.addCookies(cookies);
-  } else {
-    console.log("🔑 Логин в Discord");
+  console.log("🤖 Бот запущен, мониторинг начат");
 
-    await page.goto("https://discord.com/login");
-    await page.fill('input[name="email"]', process.env.DISCORD_EMAIL);
-    await page.fill('input[name="password"]', process.env.DISCORD_PASSWORD);
-    await page.click('button[type="submit"]');
-    await page.waitForTimeout(10_000);
-
-    const cookies = await context.cookies();
-    fs.writeFileSync(AUTH_FILE, JSON.stringify(cookies, null, 2));
-    console.log("✅ Сессия сохранена");
-  }
-
-  console.log("✅ Бот запущен и мониторит жалобы 24/7");
+  const firstRun = notified.size === 0;
+  if (firstRun) console.log("🚀 Первый запуск — отправляю все существующие жалобы");
 
   while (true) {
     try {
-      await page.goto("https://grnd.gg/admin/complaints", {
-        waitUntil: "networkidle"
-      });
+      await page.goto(URL, { waitUntil: "networkidle" });
 
-      // === берём жалобы так же, как в расширении ===
-      const complaints = await page.$$eval(
-        ".table-component-index table tbody tr",
-        rows =>
-          rows
-            .map(row => {
-              const tds = row.querySelectorAll("td");
-              if (tds.length < 4) return null;
-              return {
-                id: tds[0].innerText.trim(),
-                from: tds[1].innerText.trim(),
-                on: tds[2].innerText.trim(),
-                date: tds[3].innerText.trim()
-              };
-            })
-            .filter(Boolean)
-      );
+      // ждём таблицу с жалобами (до 15 секунд)
+      await page.waitForSelector(".table-component-index table tbody tr", { timeout: 15_000 }).catch(() => {});
+
+      // сохраняем HTML для отладки
+      fs.writeFileSync(DEBUG_HTML, await page.content());
+
+      const complaints = await page.evaluate(() => {
+        return [...document.querySelectorAll(
+          ".table-component-index table tbody tr"
+        )]
+          .map(row => {
+            const tds = row.querySelectorAll("td");
+            if (tds.length < 4) return null;
+
+            return {
+              id: tds[0].innerText.trim(),
+              from: tds[1].innerText.trim(),
+              on: tds[2].innerText.trim(),
+              date: tds[3].innerText.trim()
+            };
+          })
+          .filter(Boolean);
+      });
 
       console.log(`Найдено жалоб: ${complaints.length}`);
 
-      const newComplaints = complaints.filter(c => !notifiedIds.has(c.id));
+      let sent = 0;
 
-      if (newComplaints.length === 0) {
-        console.log("Нет новых жалоб на данный момент");
-      } else {
-        console.log(`Отправляю ${newComplaints.length} жалоб(ы)`);
+      for (const c of complaints) {
+        if (notified.has(c.id) && !firstRun) continue; // если не первый запуск — только новые
 
-        for (const c of newComplaints) {
-          await fetch(WEBHOOK_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              content:
-                "🚨 **Новая жалоба**",
-              allowed_mentions: {
-                users: [
-                  "1466921240718606418"
-                ]
-              },
-              embeds: [
-                {
-                  title: "🚨 Новая жалоба",
-                  color: 15158332,
-                  fields: [
-                    { name: "ID", value: `#${c.id}`, inline: true },
-                    { name: "От", value: c.from || "—", inline: true },
-                    { name: "На", value: c.on || "—", inline: true },
-                    { name: "Дата", value: c.date || "—" }
-                  ],
-                  footer: { text: "grnd.gg • admin panel" },
-                  timestamp: new Date().toISOString()
-                }
-              ]
-            })
-          }).catch(err => console.error("❌ Ошибка webhook:", err));
-
-          notifiedIds.add(c.id);
-        }
-
-        fs.writeFileSync(
-          NOTIFIED_FILE,
-          JSON.stringify([...notifiedIds], null, 2)
-        );
+        await sendDiscord(c);
+        notified.add(c.id);
+        sent++;
       }
+
+      if (sent > 0) {
+        saveNotified();
+        console.log(`✅ Отправлено жалоб: ${sent}`);
+      } else {
+        console.log("⏳ Новых жалоб нет");
+      }
+
     } catch (err) {
       console.error("❌ Ошибка:", err.message);
     }
+
+    // после первого цикла больше не первый запуск
+    firstRun && (firstRun = false);
 
     await new Promise(r => setTimeout(r, CHECK_INTERVAL));
   }
