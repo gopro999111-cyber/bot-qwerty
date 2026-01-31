@@ -17,6 +17,9 @@ const notifiedIds = new Set(
   JSON.parse(fs.readFileSync(NOTIFIED_FILE, "utf8"))
 );
 
+// флаг: первый запуск — шлём все существующие жалобы
+const SEND_EXISTING_ON_START = notifiedIds.size === 0;
+
 (async () => {
   const browser = await chromium.launch({
     headless: true,
@@ -74,37 +77,45 @@ const notifiedIds = new Set(
 
       console.log(`Найдено жалоб: ${complaints.length}`);
 
-      for (const c of complaints) {
-        if (notifiedIds.has(c.id)) continue;
+      const newComplaints = complaints.filter(c => !notifiedIds.has(c.id));
 
-        await fetch(WEBHOOK_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            content: `🚨 **Новая жалоба**\n<@865670632847048708> <@1257048208891449346> <@1204869793791086665>`,
-            allowed_mentions: {
-              users: [
-                "1466921240718606418"
+      if (newComplaints.length === 0) {
+        console.log("Нет новых жалоб на данный момент");
+      } else {
+        console.log(`Отправляю ${newComplaints.length} жалоб(ы)`);
+
+        for (const c of newComplaints) {
+          await fetch(WEBHOOK_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              content:
+                "🚨 **Новая жалоба**",
+              allowed_mentions: {
+                users: [
+                  "1466921240718606418"
+                ]
+              },
+              embeds: [
+                {
+                  title: "🚨 Новая жалоба",
+                  color: 15158332,
+                  fields: [
+                    { name: "ID", value: `#${c.id}`, inline: true },
+                    { name: "От", value: c.from || "—", inline: true },
+                    { name: "На", value: c.on || "—", inline: true },
+                    { name: "Дата", value: c.date || "—" }
+                  ],
+                  footer: { text: "grnd.gg • admin panel" },
+                  timestamp: new Date().toISOString()
+                }
               ]
-            },
-            embeds: [
-              {
-                title: "🚨 Новая жалоба",
-                color: 15158332,
-                fields: [
-                  { name: "ID", value: `#${c.id}`, inline: true },
-                  { name: "От", value: c.from || "—", inline: true },
-                  { name: "На", value: c.on || "—", inline: true },
-                  { name: "Дата", value: c.date || "—" }
-                ],
-                footer: { text: "grnd.gg • admin panel" },
-                timestamp: new Date().toISOString()
-              }
-            ]
-          })
-        });
+            })
+          }).catch(err => console.error("❌ Ошибка webhook:", err));
 
-        notifiedIds.add(c.id);
+          notifiedIds.add(c.id);
+        }
+
         fs.writeFileSync(
           NOTIFIED_FILE,
           JSON.stringify([...notifiedIds], null, 2)
