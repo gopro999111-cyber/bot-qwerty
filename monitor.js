@@ -11,12 +11,8 @@ const STORAGE_FILE = "notified_ids.json";
 const DISCORD_WEBHOOK =
   "https://discord.com/api/webhooks/1462854392570183702/fNoEyNK3qJ8XqEovBjL76rTn3WZoIU_Rpv5b5j5aVRLXACg3wB1PqMLjyg4P7E5R7MVd";
 
-const DISCORD_USER_IDS = [
-  "865670632847048708",
-  "1257048208891449346",
-  "1123560995638484992",
-  "1204869793791086665"
-];
+// ✅ ВСТАВЬ СЮДА ID РОЛИ (ПКМ по роли -> Copy ID)
+const DISCORD_ROLE_ID = "1466921240718606418";
 
 // ====== БЕЗОПАСНОСТЬ ПРОЦЕССА (чтобы Railway не убивал из-за unhandled) ======
 process.on("unhandledRejection", err => {
@@ -38,8 +34,11 @@ function saveNotified() {
 // ====== DISCORD SEND (с проверкой статуса и ретраями) ======
 async function sendDiscord(c) {
   const payload = {
-    content: DISCORD_USER_IDS.map(id => `<@${id}>`).join(" "),
-    allowed_mentions: { users: DISCORD_USER_IDS },
+    // ✅ ТЕГАЕМ РОЛЬ
+    content: `<@&${DISCORD_ROLE_ID}>`,
+    allowed_mentions: {
+      roles: [DISCORD_ROLE_ID] // ✅ разрешаем упоминание роли
+    },
     embeds: [
       {
         title: "🚨 Новая жалоба",
@@ -159,4 +158,3 @@ async function getComplaints(page) {
     await new Promise(r => setTimeout(r, CHECK_INTERVAL));
   }
 })();
-
