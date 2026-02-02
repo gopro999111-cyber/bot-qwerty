@@ -14,6 +14,7 @@ const DISCORD_WEBHOOK =
 const DISCORD_USER_IDS = [
   "865670632847048708",
   "1257048208891449346",
+  "1123560995638484992",
   "1204869793791086665"
 ];
 
@@ -158,3 +159,4 @@ async function getComplaints(page) {
     await new Promise(r => setTimeout(r, CHECK_INTERVAL));
   }
 })();
+
